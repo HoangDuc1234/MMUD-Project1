@@ -38,9 +38,8 @@ const Spinner = () => <span className="spinner-border spinner-border-sm" role="s
 function App() {
   // State for auth and data
   const [password, setPassword] = useState("");
+  const [keychain, setKeychain] = useState(null);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [repr, setRepr] = useState("");
-  const [trustedDataCheck, setTrustedDataCheck] = useState("");
   
   // State for UI
   const [loading, setLoading] = useState({});
@@ -57,6 +56,14 @@ function App() {
 
   // State for REMOVE form
   const [removeName, setRemoveName] = useState("");
+
+  const resetDashboardState = () => {
+    setGetName("");
+    setRetrievedPassword({name: "", value: ""});
+    setSetName("");
+    setSetValue("");
+    setRemoveName("");
+  }
 
   const handleApiError = (error, action = 'general') => {
     const errorMessage = error.response?.data?.error || error.message;
@@ -87,37 +94,35 @@ function App() {
     }
   }
 
-  const handleInit = async () => {
-    await axios.post(`${API_URL}/init`, { password });
+  const handleCreate = async () => {
+    resetDashboardState();
+    const { Keychain } = await import("./password-manager");
+    const newKeychain = await Keychain.init(password);
+    const [repr, trustedDataCheck] = await newKeychain.dump();
+    await axios.post(API_URL, { repr, trustedDataCheck });
+    setKeychain(newKeychain);
     setIsLoggedIn(true);
-    await handleDump('init');
-    handleSetNotification("New keychain initialized successfully!");
+    handleSetNotification("New keychain created and saved successfully!");
   };
 
-  const handleLoad = async () => {
-    if (!repr) {
-      setNotification({ type: "warning", message: "Keychain Data is required to load." });
-      return;
-    }
-    await axios.post(`${API_URL}/load`, { password, repr, trustedDataCheck: trustedDataCheck || undefined });
+  const handleLogin = async () => {
+    resetDashboardState();
+    const { data } = await axios.get(API_URL);
+    const { Keychain } = await import("./password-manager");
+    const loadedKeychain = await Keychain.load(password, data.repr, data.trustedDataCheck);
+    setKeychain(loadedKeychain);
     setIsLoggedIn(true);
-    handleSetNotification("Keychain loaded successfully!");
-  };
-
-  const handleDump = async (action) => {
-    const response = await axios.get(`${API_URL}/dump`);
-    setRepr(response.data.repr);
-    setTrustedDataCheck(response.data.trustedDataCheck);
+    handleSetNotification("Keychain unlocked successfully!");
   };
 
   const handleGet = async (e) => {
     e.preventDefault();
     setRetrievedPassword({name: "", value: ""});
-    const response = await axios.post(`${API_URL}/get`, { name: getName });
-    if (response.data.value === null) {
+    const value = await keychain.get(getName);
+    if (value === null) {
       handleSetNotification(`No password found for "${getName}".`, "warning");
     } else {
-      setRetrievedPassword({name: getName, value: response.data.value});
+      setRetrievedPassword({name: getName, value: value});
       handleSetNotification(`Password for "${getName}" retrieved.`);
     }
     setGetName("");
@@ -125,19 +130,21 @@ function App() {
 
   const handleSet = async (e) => {
     e.preventDefault();
-    await axios.post(`${API_URL}/set`, { name: setName, value: setValue });
+    await keychain.set(setName, setValue);
+    const [repr, trustedDataCheck] = await keychain.dump();
+    await axios.post(API_URL, { repr, trustedDataCheck });
     handleSetNotification(`Password for "${setName}" has been set.`);
     setSetName("");
     setSetValue("");
-    await handleDump('set');
   };
 
   const handleRemove = async (e) => {
     e.preventDefault();
-    await axios.post(`${API_URL}/remove`, { name: removeName });
+    await keychain.remove(removeName);
+    const [repr, trustedDataCheck] = await keychain.dump();
+    await axios.post(API_URL, { repr, trustedDataCheck });
     handleSetNotification(`Password for "${removeName}" has been removed.`, "info");
     setRemoveName("");
-    await handleDump('remove');
   };
 
   if (!isLoggedIn) {
@@ -155,22 +162,14 @@ function App() {
                 <KeyIcon className="icon" />
                 <input type="password" placeholder="Master Password" className="form-control" value={password} onChange={(e) => setPassword(e.target.value)} />
             </div>
-            <button className="btn btn-primary w-100 mb-3" onClick={() => handleAction('init', handleInit)} disabled={loading.init}>
-              {loading.init ? <Spinner /> : "Initialize New Keychain"}
-            </button>
-            <hr />
-            <h5 className="text-center text-muted mb-3">Or Load Existing</h5>
-            <div className="form-group mb-2">
-              <label className="form-label">Keychain Data</label>
-              <textarea className="form-control" rows="4" value={repr} onChange={(e) => setRepr(e.target.value)} placeholder="Paste your saved keychain data here"></textarea>
+            <div className="d-grid gap-2">
+              <button className="btn btn-primary" onClick={() => handleAction('login', handleLogin)} disabled={loading.login}>
+                {loading.login ? <Spinner /> : "Unlock"}
+              </button>
+              <button className="btn btn-outline-secondary" onClick={() => handleAction('create', handleCreate)} disabled={loading.create}>
+                {loading.create ? <Spinner /> : "Create New"}
+              </button>
             </div>
-            <div className="form-group mb-3">
-              <label className="form-label">Checksum (Optional)</label>
-              <input type="text" className="form-control" value={trustedDataCheck} onChange={(e) => setTrustedDataCheck(e.target.value)} placeholder="Paste your trusted checksum here" />
-            </div>
-            <button className="btn btn-success w-100" onClick={() => handleAction('load', handleLoad)} disabled={loading.load}>
-              {loading.load ? <Spinner /> : "Load Keychain"}
-            </button>
           </div>
         </div>
       </div>
@@ -182,11 +181,15 @@ function App() {
       {notification && <Notification message={notification.message} type={notification.type} onDismiss={() => setNotification(null)} />}
       <div className="d-flex justify-content-between align-items-center mb-4">
         <h1 className="h3 mb-0">Password Dashboard</h1>
-        <button className="btn btn-sm btn-outline-secondary btn-icon" onClick={() => setIsLoggedIn(false)}><LogoutIcon /> Lock</button>
+        <button className="btn btn-sm btn-outline-secondary btn-icon" onClick={() => {
+          setIsLoggedIn(false);
+          setPassword("");
+          resetDashboardState();
+        }}><LogoutIcon /> Lock</button>
       </div>
       
       <div className="row g-4">
-        <div className="col-lg-7">
+        <div className="col-12">
           <div className="card dashboard-card mb-4">
             <div className="card-body p-4">
               <h5 className="card-title card-title-icon"><SearchIcon /> Get Password</h5>
@@ -251,25 +254,6 @@ function App() {
                     </form>
                     </div>
                 </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="col-lg-5">
-          <div className="card dashboard-card keychain-data-card">
-            <div className="card-body p-4">
-              <h5 className="card-title card-title-icon"><SaveIcon/> Your Keychain Data</h5>
-              <p className="card-text text-muted small">
-                Remember to copy and save this data every time you make a change. This is your encrypted backup.
-              </p>
-              <div className="form-group mb-3">
-                <label className="form-label small text-uppercase">Keychain Data</label>
-                <textarea className="form-control" rows="8" value={repr} readOnly></textarea>
-              </div>
-              <div className="form-group">
-                <label className="form-label small text-uppercase">Checksum</label>
-                <input type="text" className="form-control" value={trustedDataCheck} readOnly />
-              </div>
             </div>
           </div>
         </div>
